@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Sound-Controlled Geometry Arena</title>
+  <style>
+    body {
+      margin: 0;
+      background: #000;
+    }
+  </style>
+  <!-- Include p5.js core, sound library, and collide2d library -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
+  <script defer src="https://unpkg.com/p5.collide2d"></script>
+</head>
+
+<body>
+  <script>
+    let player;               
+    let enemies = [];         
+    let powerUps = [];        
+    let gravity = 0.2;        
+
+    // Audio analysis and playback
+    let amplitude;            // volume detector
+    let soundBus;             // Gain node to control overall sound level
+    let musicTrack = null;    
+    let musicFileName = 'No audio file loaded'; // Display name of current audio file
+    let vol = 0;              // Current volume level (0..1)
+
+    // Volume scaling parameters
+    const VOL_PEAK = 0.3;     // Max volume considered for full meter
+    const VOL_FLOOR = 0.003;  // Minimum volume to ignore noise
+    const BUMP_GAIN = 180;    // Multiplier for volume -> upward impulse
+
+    // Game state
+    let score = 0;            
+    let bestScore = 0;        
+    let lives = 3;            
+    let gameOver = false;     
+    let muteMode = false;     // spacebar to mute
+
+    // Sound effects synthesizers (hit and pickup)
+    let hitOsc;               // Triangle wave oscillator for hit sound
+    let pickupOsc;           // Sine wave oscillator for pickup sound
+    let hitEnv;              // Envelope for hit sound
+    let pickupEnv;           // Envelope for pickup sound
+    let audioReady = false;  // Indicates whether audio system is initialised
+
+    function handleAudioFileSelected(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+
+      userStartAudio();
+      initAudio();
+
+      if (musicTrack) {
+        musicTrack.stop();
+        musicTrack = null;
+      }
+
+      const objectUrl = URL.createObjectURL(file);
+      musicFileName = file.name;
+
+      loadSound(objectUrl, (snd) => {
+        musicTrack = snd;
+        musicTrack.setVolume(1);
+        musicTrack.loop();
+        amplitude.setInput(musicTrack);
+      }, (err) => {
+        console.error(err);
+      });
+    }
+
+    function loadLocalAudioFile() {
+      const localAudioPath = 'Steamboat Willie - DML Film DC02268 - NYU Stream.mp4';
+      userStartAudio();
+      initAudio();
+
+      if (musicTrack) {
+        musicTrack.stop();
+        musicTrack = null;
+      }
+
+      musicFileName = localAudioPath;
+
+      loadSound(localAudioPath, (snd) => {
+        musicTrack = snd;
+        musicTrack.setVolume(1);
+        musicTrack.loop();
+        amplitude.setInput(musicTrack);
+      }, (err) => {
+        console.error(err);
+      });
+    }
+
+    // setup
+    function setup() {
+      createCanvas(800, 600);               
+      amplitude = new p5.Amplitude(0.45);   // Initialise amplitude analyser
+      loadLocalAudioFile();                 
+      bestScore = getItem('bestScore') || 0; // Retrieve high score from localStorage
+
+      // Player object (red triangle)
+      player = {
+        pos: createVector(width / 2, height / 2),
+        size: 20
+      };
+
+      // enemies and power-ups
+      for (let i = 0; i < 5; i++) {
+        enemies.push(createEnemy());
+      }
+      for (let i = 0; i < 3; i++) {
+        powerUps.push(createPowerUp());
+      }
+    }
+
+    // audio initialization
+    function initAudio() {
+      if (audioReady) return;
+
+      soundBus = new p5.Gain();
+      soundBus.amp(0.85);
+      soundBus.connect();
+
+      hitOsc = new p5.Oscillator('triangle');
+      hitOsc.disconnect();
+      hitOsc.connect(soundBus);
+      hitOsc.amp(0);
+
+      pickupOsc = new p5.Oscillator('sine');
+      pickupOsc.disconnect();
+      pickupOsc.connect(soundBus);
+      pickupOsc.amp(0);
+
+      hitEnv = new p5.Envelope();
+      hitEnv.setADSR(0.001, 0.08, 0, 0.12);
+      hitEnv.setRange(0.35, 0);
+
+      pickupEnv = new p5.Envelope();
+      pickupEnv.setADSR(0.001, 0.04, 0, 0.08);
+      pickupEnv.setRange(0.22, 0);
+
+      hitOsc.start();
+      pickupOsc.start();
+
+      audioReady = true;
+    }
+
+    // sound playing
+    function playSound(kind) {
+      if (!audioReady) return;
+
+      if (kind === 'hit') {
+        hitOsc.freq(random(140, 240));
+        hitEnv.play(hitOsc);
+      } else if (kind === 'pickup') {
+        pickupOsc.freq(random(620, 920));
+        pickupEnv.play(pickupOsc);
+      }
+    }
+
+    // object creator
+    function createEnemy() {
+      return {
+        pos: createVector(random(50, width - 50), random(50, height / 2)),
+        vel: createVector(0, 0),
+        size: 15,
+        type: random(['circle', 'triangle'])
+      };
+    }
+
+    function createPowerUp() {
+      return {
+        pos: createVector(random(50, width - 50), random(50, height / 3)),
+        vel: createVector(0, 0),
+        size: 15,
+        collected: false
+      };
+    }
+
+    // draw loop
+    function draw() {
+      background(0);
+      drawBoundary();
+
+      if (!gameOver) {
+        // Get current volume from the music track (or 0 if muted)
+        vol = muteMode ? 0 : amplitude.getLevel();
+        let volNorm = constrain(map(vol, 0, VOL_PEAK, 0, 1), 0, 1);
+
+        // Move player with mouse, constrained inside the arena
+        player.pos.x = mouseX;
+        player.pos.y = mouseY;
+        player.pos.x = constrain(player.pos.x, 30, width - 30);
+        player.pos.y = constrain(player.pos.y, 30, height - 30);
+
+        updatePhysics();      
+        checkCollisions();    
+
+        drawPlayer();
+        drawEnemies();
+        drawPowerUps();
+        drawUI(volNorm);
+      } else {
+        drawGameOver();       
+      }
+    }
+
+    // physics
+    function updatePhysics() {
+      let speedScale = 1;                 // No speed scaling by volume in this version
+      const BOUNCE = 0.9;                // Coefficient of restitution
+      const VERT_SPEED_THRESHOLD = 0.5;  // Below this vertical speed -> object is considered "stuck"
+      const BOTTOM_Y = height - 20;       // Bottom boundary (inner playfield)
+
+      // boundary bouncing
+      function applyBoundary(obj, size) {
+        if (obj.pos.y - size / 2 < 20) {
+          obj.pos.y = 20 + size / 2;
+          obj.vel.y = Math.abs(obj.vel.y) * BOUNCE;
+        }
+        if (obj.pos.y + size / 2 > height - 20) {
+          obj.pos.y = height - 20 - size / 2;
+          obj.vel.y = -Math.abs(obj.vel.y) * BOUNCE;
+        }
+        if (obj.pos.x - size / 2 < 20) {
+          obj.pos.x = 20 + size / 2;
+          obj.vel.x = Math.abs(obj.vel.x) * BOUNCE;
+        }
+        if (obj.pos.x + size / 2 > width - 20) {
+          obj.pos.x = width - 20 - size / 2;
+          obj.vel.x = -Math.abs(obj.vel.x) * BOUNCE;
+        }
+      }
+
+      // Update enemies
+      for (let i = 0; i < enemies.length; i++) {
+        let e = enemies[i];
+        e.vel.y += gravity * speedScale;
+        e.vel.x += random(-0.15, 0.15);       // Random horizontal drift
+        let maxSpeed = 12 * speedScale;
+        e.vel.limit(maxSpeed);
+
+        e.pos.x += e.vel.x * speedScale;
+        e.pos.y += e.vel.y * speedScale;
+
+        applyBoundary(e, e.size);
+
+        // enemy replaced when it hits the bottom with low vertical speed
+        if (e.pos.y + e.size / 2 >= BOTTOM_Y - 5 && Math.abs(e.vel.y) < VERT_SPEED_THRESHOLD) {
+          enemies.splice(i, 1);
+          enemies.push(createEnemy());
+          i--;
+        }
+      }
+
+      // Update power-ups
+      for (let i = 0; i < powerUps.length; i++) {
+        let p = powerUps[i];
+        if (p.collected) continue;
+
+        p.vel.y += gravity * speedScale;
+        p.vel.x += random(-0.12, 0.12);
+        let maxSpeed = 10 * speedScale;
+        p.vel.limit(maxSpeed);
+
+        p.pos.x += p.vel.x * speedScale;
+        p.pos.y += p.vel.y * speedScale;
+
+        applyBoundary(p, p.size);
+
+        if (p.pos.y + p.size / 2 >= BOTTOM_Y - 5 && Math.abs(p.vel.y) < VERT_SPEED_THRESHOLD) {
+          powerUps.splice(i, 1);
+          powerUps.push(createPowerUp());
+          i--;
+        }
+      }
+    }
+
+    // collision box
+    // triangle.collisionBox -> circumcircle.
+    function collideCircleTriangle(cx, cy, r, x1, y1, x2, y2, x3, y3) {
+      let centerX = (x1 + x2 + x3) / 3;
+      let centerY = (y1 + y2 + y3) / 3;
+      let side1 = dist(x1, y1, x2, y2);
+      let side2 = dist(x2, y2, x3, y3);
+      let side3 = dist(x3, y3, x1, y1);
+      let maxSide = max(side1, side2, side3);
+      let triRadius = maxSide / 1.5;
+      return collideCircleCircle(cx, cy, r, centerX, centerY, triRadius);
+    }
+
+    function checkCollisions() {
+      // Player vs Enemy collision
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        let e = enemies[i];
+        let hit = false;
+        if (e.type === 'circle') {
+          hit = collideCircleCircle(
+            player.pos.x, player.pos.y, player.size,
+            e.pos.x, e.pos.y, e.size
+          );
+        } else {
+          // Triangle vertices (based on enemy position)
+          let x1 = e.pos.x;
+          let y1 = e.pos.y - 10;
+          let x2 = e.pos.x + 10;
+          let y2 = e.pos.y + 10;
+          let x3 = e.pos.x - 10;
+          let y3 = e.pos.y + 10;
+          hit = collideCircleTriangle(
+            player.pos.x, player.pos.y, player.size,
+            x1, y1, x2, y2, x3, y3
+          );
+        }
+        if (hit) {
+          playSound('hit');           
+          lives--;                    
+          resetObjects();             // Reset all enemies and power-ups to new random positions
+          if (lives <= 0) {
+            gameOver = true;
+            if (score > bestScore) {
+              bestScore = score;
+              storeItem('bestScore', bestScore); // Save high score
+            }
+          }
+          break;                      // Only one collision per frame
+        }
+      }
+
+      // Player vs Power-up collision
+      for (let i = powerUps.length - 1; i >= 0; i--) {
+        let p = powerUps[i];
+        if (!p.collected && collideRectCircle(
+          p.pos.x - p.size / 2, p.pos.y - p.size / 2,
+          p.size, p.size,
+          player.pos.x, player.pos.y, player.size
+        )) {
+          score += 10;                
+          playSound('pickup');        
+          p.collected = true;         // collect & replace
+          setTimeout(() => {
+            powerUps.splice(i, 1);
+            powerUps.push(createPowerUp());
+          }, 100);
+        }
+      }
+    }
+
+    function resetObjects() {
+      enemies = [];
+      for (let i = 0; i < 5; i++) enemies.push(createEnemy());
+      powerUps = [];
+      for (let i = 0; i < 3; i++) powerUps.push(createPowerUp());
+    }
+
+    // aux.drawing
+    // player -> red triangle
+    function drawPlayer() {
+      fill(255, 0, 0);
+      noStroke();
+      push();
+      translate(player.pos.x, player.pos.y);
+      triangle(0, -player.size / 2, player.size / 2, player.size / 2, -player.size / 2, player.size / 2);
+      pop();
+    }
+
+    // enemies -> blue circles || triangles
+    function drawEnemies() {
+      fill(0, 100, 255);
+      noStroke();
+      for (let e of enemies) {
+        if (e.type === 'circle') {
+          circle(e.pos.x, e.pos.y, e.size);
+        } else {
+          triangle(e.pos.x, e.pos.y - 10, e.pos.x + 10, e.pos.y + 10, e.pos.x - 10, e.pos.y + 10);
+        }
+      }
+    }
+
+    // power-ups -> green squares
+    function drawPowerUps() {
+      fill(0, 255, 0);
+      noStroke();
+      for (let p of powerUps) {
+        if (!p.collected) {
+          rect(p.pos.x - p.size / 2, p.pos.y - p.size / 2, p.size, p.size);
+        }
+      }
+    }
+
+    function drawBoundary() {
+      noFill();
+      stroke(255, 255, 255, 100);
+      strokeWeight(2);
+      rect(20, 20, width - 40, height - 40);
+    }
+
+    // UI
+    function drawUI(volNorm) {
+      textAlign(LEFT, TOP);
+      fill(255);
+      textSize(20);
+      text('Score: ' + score, 30, 35);
+      text('Best: ' + bestScore, 200, 35);
+      text('Lives:', width - 180, 35);
+      textSize(12);
+      text(
+        musicTrack ? 'Playing: ' + musicFileName : 'Loading local audio file...',
+        30,
+        62
+      );
+
+      // lives -> red circles
+      for (let i = 0; i < lives; i++) {
+        fill(255, 0, 0);
+        circle(width - 120 + i * 30, 45, 15);
+      }
+
+      // Volume meter
+      let barW = 120;
+      let barH = 14;
+      let barX = width - 180;
+      let barY = height - 46;
+
+      fill(100);
+      rect(barX, barY, barW, barH);
+
+      fill(0, 255, 255);
+      rect(barX, barY, volNorm * barW, barH);
+
+      fill(255);
+      textSize(12);
+      text('Volume', barX - 60, barY - 2);
+    }
+
+    function drawGameOver() {
+      fill(255, 0, 0);
+      textSize(50);
+      textAlign(CENTER, CENTER);
+      text('Game Over', width / 2, height / 2 - 50);
+      textSize(30);
+      text('Score: ' + score, width / 2, height / 2);
+      text('Best: ' + bestScore, width / 2, height / 2 + 40);
+      textSize(20);
+      text('Click to restart', width / 2, height / 2 + 90);
+    }
+
+    // interaction
+    function mousePressed() {
+      if (getAudioContext().state !== 'running') {
+        userStartAudio();
+      }
+      initAudio();
+      if (musicTrack && !musicTrack.isPlaying()) {
+        musicTrack.loop();
+      }
+      if (gameOver) restartGame();
+    }
+
+    // mute toggle
+    function keyPressed() {
+      if (keyCode === 32) muteMode = !muteMode;
+    }
+
+    // Resets game
+    function restartGame() {
+      score = 0;
+      lives = 3;
+      gameOver = false;
+      resetObjects();
+    }
+  </script>
+</body>
+
+</html>
