@@ -18,28 +18,30 @@
 
 <body>
   <script>
-    let player;               
-    let enemies = [];         
-    let powerUps = [];        
-    let gravity = 0.2;        
+    let player;
+    let enemies = [];
+    let powerUps = [];
+    let gravity = 0.2;
 
     // Audio analysis and playback
     let amplitude;            // volume detector
     let soundBus;             // Gain node to control overall sound level
-    let musicTrack = null;    
+    let musicTrack = null;
     let musicFileName = 'No audio file loaded'; // Display name of current audio file
     let vol = 0;              // Current volume level (0..1)
+    let soundLift = 0;        // Smoothed upward impulse driven by audio
+    let autoRefresh = false;  // Manual refresh only (press R)
 
     // Volume scaling parameters
-    const VOL_PEAK = 0.3;     // Max volume considered for full meter
+    const VOL_PEAK = 0.1;     // Max volume considered for full meter
     const VOL_FLOOR = 0.003;  // Minimum volume to ignore noise
-    const BUMP_GAIN = 180;    // Multiplier for volume -> upward impulse
+    const BUMP_GAIN = 30;    // Multiplier for volume -> upward impulse
 
     // Game state
-    let score = 0;            
-    let bestScore = 0;        
-    let lives = 3;            
-    let gameOver = false;     
+    let score = 0;
+    let bestScore = 0;
+    let lives = 3;
+    let gameOver = false;
     let muteMode = false;     // spacebar to mute
 
     // Sound effects synthesizers (hit and pickup)
@@ -68,7 +70,7 @@
         musicTrack = snd;
         musicTrack.setVolume(1);
         musicTrack.loop();
-        amplitude.setInput(musicTrack);
+        // amplitude.setInput(musicTrack);
       }, (err) => {
         console.error(err);
       });
@@ -88,9 +90,9 @@
 
       loadSound(localAudioPath, (snd) => {
         musicTrack = snd;
-        musicTrack.setVolume(1);
+        musicTrack.setVolume(0.05); // Start with lower volume for local file
         musicTrack.loop();
-        amplitude.setInput(musicTrack);
+        // amplitude.setInput(musicTrack);
       }, (err) => {
         console.error(err);
       });
@@ -98,9 +100,9 @@
 
     // setup
     function setup() {
-      createCanvas(800, 600);               
+      createCanvas(800, 600);
       amplitude = new p5.Amplitude(0.45);   // Initialise amplitude analyser
-      loadLocalAudioFile();                 
+      loadLocalAudioFile();
       bestScore = getItem('bestScore') || 0; // Retrieve high score from localStorage
 
       // Player object (red triangle)
@@ -188,31 +190,35 @@
       drawBoundary();
 
       if (!gameOver) {
-        // Get current volume from the music track (or 0 if muted)
-        vol = muteMode ? 0 : amplitude.getLevel();
+
+        vol = amplitude.getLevel();
         let volNorm = constrain(map(vol, 0, VOL_PEAK, 0, 1), 0, 1);
 
-        // Move player with mouse, constrained inside the arena
+        if (vol > 0) {
+          soundLift = max(soundLift * 0.92, max(0, vol - VOL_FLOOR) * BUMP_GAIN);
+        }
+
+        // Player follows mouse and constrained within 30 and width-30 / height-30
         player.pos.x = mouseX;
         player.pos.y = mouseY;
         player.pos.x = constrain(player.pos.x, 30, width - 30);
         player.pos.y = constrain(player.pos.y, 30, height - 30);
 
-        updatePhysics();      
-        checkCollisions();    
+        updatePhysics();
+        checkCollisions();
 
         drawPlayer();
         drawEnemies();
         drawPowerUps();
         drawUI(volNorm);
       } else {
-        drawGameOver();       
+        drawGameOver();
       }
     }
 
     // physics
     function updatePhysics() {
-      let speedScale = 1;                 // No speed scaling by volume in this version
+      let speedScale = 1 + vol * 1;                 // No speed scaling by volume in this version
       const BOUNCE = 0.9;                // Coefficient of restitution
       const VERT_SPEED_THRESHOLD = 0.5;  // Below this vertical speed -> object is considered "stuck"
       const BOTTOM_Y = height - 20;       // Bottom boundary (inner playfield)
@@ -226,6 +232,7 @@
         if (obj.pos.y + size / 2 > height - 20) {
           obj.pos.y = height - 20 - size / 2;
           obj.vel.y = -Math.abs(obj.vel.y) * BOUNCE;
+          // obj.vel.x *= 0.9; // Friction on horizontal movement when hitting the floor
         }
         if (obj.pos.x - size / 2 < 20) {
           obj.pos.x = 20 + size / 2;
@@ -242,6 +249,7 @@
         let e = enemies[i];
         e.vel.y += gravity * speedScale;
         e.vel.x += random(-0.15, 0.15);       // Random horizontal drift
+        e.vel.y -= soundLift * 0.03;           // Audio-driven bounce
         let maxSpeed = 12 * speedScale;
         e.vel.limit(maxSpeed);
 
@@ -250,7 +258,6 @@
 
         applyBoundary(e, e.size);
 
-        // enemy replaced when it hits the bottom with low vertical speed
         if (e.pos.y + e.size / 2 >= BOTTOM_Y - 5 && Math.abs(e.vel.y) < VERT_SPEED_THRESHOLD) {
           enemies.splice(i, 1);
           enemies.push(createEnemy());
@@ -265,6 +272,7 @@
 
         p.vel.y += gravity * speedScale;
         p.vel.x += random(-0.12, 0.12);
+        p.vel.y -= soundLift * 0.025;          // Audio-driven bounce
         let maxSpeed = 10 * speedScale;
         p.vel.limit(maxSpeed);
 
@@ -318,8 +326,8 @@
           );
         }
         if (hit) {
-          playSound('hit');           
-          lives--;                    
+          playSound('hit');
+          lives--;
           resetObjects();             // Reset all enemies and power-ups to new random positions
           if (lives <= 0) {
             gameOver = true;
@@ -340,8 +348,8 @@
           p.size, p.size,
           player.pos.x, player.pos.y, player.size
         )) {
-          score += 10;                
-          playSound('pickup');        
+          score += 10;
+          playSound('pickup');
           p.collected = true;         // collect & replace
           setTimeout(() => {
             powerUps.splice(i, 1);
@@ -410,10 +418,12 @@
       text('Lives:', width - 180, 35);
       textSize(12);
       text(
-        musicTrack ? 'Playing: ' + musicFileName : 'Loading local audio file...',
+        musicTrack ? (musicTrack.isPlaying() ? 'Playing: ' : 'Paused: ') + musicFileName : 'Loading local audio file...',
         30,
         62
       );
+      text('Press R to refresh objects', 30, 82);
+      text('Press SPACE to toggle music', 30, 102);
 
       // lives -> red circles
       for (let i = 0; i < lives; i++) {
@@ -462,11 +472,22 @@
       if (gameOver) restartGame();
     }
 
-    // mute toggle
+    // mute toggle / manual refresh
     function keyPressed() {
-      if (keyCode === 32) muteMode = !muteMode;
+      if (keyCode === 32) { // spacebar
+        if (musicTrack) {
+          if (musicTrack.isPlaying()) {
+            musicTrack.pause();
+            soundLift = 0;
+          } else {
+            musicTrack.loop();
+          }
+        }
+      }
+      if (key === 'r' || key === 'R') {
+        resetObjects();
+      }
     }
-
     // Resets game
     function restartGame() {
       score = 0;
