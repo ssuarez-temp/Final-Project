@@ -22,6 +22,8 @@
     let enemies = [];
     let powerUps = [];
     let gravity = 0.2;
+    let amigos = 4;
+    let enemigos = 5;
 
     // Audio analysis and playback
     let amplitude;            // volume detector
@@ -112,10 +114,10 @@
       };
 
       // enemies and power-ups
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < enemigos; i++) {
         enemies.push(createEnemy());
       }
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < amigos; i++) {
         powerUps.push(createPowerUp());
       }
     }
@@ -361,9 +363,9 @@
 
     function resetObjects() {
       enemies = [];
-      for (let i = 0; i < 5; i++) enemies.push(createEnemy());
+      for (let i = 0; i < enemigos; i++) enemies.push(createEnemy());
       powerUps = [];
-      for (let i = 0; i < 3; i++) powerUps.push(createPowerUp());
+      for (let i = 0; i < amigos; i++) powerUps.push(createPowerUp());
     }
 
     // aux.drawing
@@ -414,17 +416,19 @@
       fill(255);
       textSize(20);
       text('Score: ' + score, 30, 35);
-      text('Best: ' + bestScore, 200, 35);
-      text('Lives:', width - 180, 35);
+      text('Best: ' + bestScore, 175, 35);
+      text('Gravity: ' + (gravity > 0 ? 'On' : 'Off'), 325, 35);
+      text('Lives:', width - 200, 35);
       textSize(12);
       text(
         musicTrack ? (musicTrack.isPlaying() ? 'Playing: ' : 'Paused: ') + musicFileName : 'Loading local audio file...',
         30,
         62
       );
-      text('Press R to refresh objects', 30, 82);
-      text('Press SPACE to toggle music', 30, 102);
-
+      text('Press R to restart', 30, 82);
+      text('Press G to toggle gravity', 30, 102);
+      text('Press SPACE to toggle music', 30, 122);
+      
       // lives -> red circles
       for (let i = 0; i < lives; i++) {
         fill(255, 0, 0);
@@ -485,7 +489,16 @@
         }
       }
       if (key === 'r' || key === 'R') {
+        lives = 3;
         resetObjects();
+        if (score > bestScore) {
+          bestScore = score;
+          storeItem('bestScore', bestScore); // Save high score
+        }
+        score = 0;
+      }
+      if (key === 'G' || key === 'g') {
+        gravity = gravity === 0.2 ? 0 : 0.2; // Toggle gravity
       }
     }
     // Resets game
